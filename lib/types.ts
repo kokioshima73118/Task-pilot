@@ -53,6 +53,35 @@ export interface InboxItem {
   status: "new" | "analyzed" | "done";
   aiSummary: string | null;
   proposals: Proposal[];
+  sourceEventId?: string; // 取り込み元カレンダー会議 (重複取り込み防止)
+}
+
+/**
+ * ログインユーザーのカレンダー上の会議 (Google Calendar のモック)。
+ * 実接続時は Calendar API の events.list を attendee=self でフィルタした結果に相当。
+ */
+export interface CalendarEvent {
+  id: string;
+  title: string;
+  datetime: string; // "YYYY-MM-DD HH:mm"
+  organizer: string; // 主催者メール
+  attendees: string[]; // 参加者メール
+  recurring: boolean; // 定例会議か
+  hasNotes: boolean; // 議事メモ (Gemini メモ等) があるか
+  notes: string; // 議事メモ本文
+}
+
+/** プロジェクトごとに「どの会議から情報を読み込むか」を定義する設定。 */
+export interface MeetingSource {
+  id: string;
+  projectId: string;
+  type: "event" | "recurring";
+  label: string; // 表示名
+  eventTitle?: string; // type=event: 完全一致する会議タイトル
+  namePattern?: string; // type=recurring: 部分一致する名称 (例: "週次定例MTG")
+  autoImport: boolean; // 一致する会議を自動で取り込むか
+  createdAt: string;
+  lastSyncedAt: string | null;
 }
 
 export interface Project {
@@ -68,6 +97,8 @@ export interface AppData {
   projects: Project[];
   tasks: Task[];
   inbox: InboxItem[];
+  calendarEvents: CalendarEvent[]; // ログインユーザーのカレンダー
+  meetingSources: MeetingSource[]; // プロジェクト別の会議読み込み設定
   currentProjectId: string;
   currentUserEmail: string;
 }

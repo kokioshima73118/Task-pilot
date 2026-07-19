@@ -11,6 +11,8 @@ const NAV = [
   { href: "/board", label: "カンバンボード", icon: "📋" },
   { href: "/wbs", label: "WBS / ガント", icon: "📊" },
   { href: "/inbox", label: "連携インボックス", icon: "📥" },
+  { href: "/meetings", label: "会議連携の設定", icon: "📆" },
+  { href: "/summary", label: "期間サマリ", icon: "📈" },
   { href: "/members", label: "メンバー", icon: "👥" },
 ];
 

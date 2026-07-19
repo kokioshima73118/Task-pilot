@@ -1,4 +1,4 @@
-import { AppData, InboxItem, Member, Project, Task } from "./types";
+import { AppData, CalendarEvent, InboxItem, MeetingSource, Member, Project, Task } from "./types";
 
 const today = new Date();
 function d(offset: number): string {
@@ -62,6 +62,7 @@ const inbox: InboxItem[] = [
     status: "new",
     aiSummary: null,
     proposals: [],
+    sourceEventId: "ev-weekly-latest",
     content: `## 週次定例MTG (${d(-1)})
 参加者: 大島、佐藤、田中、鈴木
 
@@ -104,6 +105,7 @@ const inbox: InboxItem[] = [
     author: "Google カレンダー (Gemini メモ)",
     datetime: d(-3) + " 15:00",
     status: "done",
+    sourceEventId: "ev-hearing",
     aiSummary: "既存顧客3社へのヒアリングを実施。CSV一括インポート機能への要望が最多。モバイル対応は次期フェーズで検討することで合意。",
     proposals: [
       { id: "pr1", title: "CSV一括インポート機能の要件定義", description: "顧客ヒアリングで最多要望。優先検討。", assigneeName: "佐藤 健太", dueDate: d(10), priority: "medium", accepted: true },
@@ -116,10 +118,140 @@ A社・B社・C社の担当者にβ版の感想をヒアリング。
   },
 ];
 
+const ALL = members.map((m) => m.email);
+const [STAR, KENTA, MISAKI] = ALL;
+
+// ログインユーザー (大島) のカレンダー。実接続時は Calendar API の events.list 相当。
+const calendarEvents: CalendarEvent[] = [
+  {
+    id: "ev-weekly-prev",
+    title: "週次定例MTG",
+    datetime: d(-8) + " 10:00",
+    organizer: STAR,
+    attendees: ALL,
+    recurring: true,
+    hasNotes: true,
+    notes: `## 週次定例MTG (${d(-8)})
+参加者: 大島、佐藤、田中、鈴木
+
+### 決定事項
+- 開発フェーズのスケジュールを1週間前倒しすることで合意。
+- デザインシステムのv2をLP制作にも適用する。
+
+### 議論内容
+- 佐藤さんより: API設計のドラフトが完成。今週レビュー会を実施したい。
+- 田中さんより: UIコンポーネントの共通化を進める。来週火曜までにStorybookを整備する。
+- 大島さんより: 採用面談の日程調整が必要。人事と連携して今週中に確定させる。
+
+### 次回までのアクション
+- APIレビュー会の開催(佐藤・今週中)
+- Storybook整備(田中・来週火曜)`,
+  },
+  {
+    id: "ev-weekly-latest",
+    title: "週次定例MTG",
+    datetime: d(-1) + " 10:00",
+    organizer: STAR,
+    attendees: ALL,
+    recurring: true,
+    hasNotes: true,
+    notes: `(取り込み済み) 週次定例MTG ${d(-1)} の議事メモ`,
+  },
+  {
+    id: "ev-weekly-next",
+    title: "週次定例MTG",
+    datetime: d(6) + " 10:00",
+    organizer: STAR,
+    attendees: ALL,
+    recurring: true,
+    hasNotes: false, // 未来の予定 (議事メモ未作成)
+    notes: "",
+  },
+  {
+    id: "ev-sprint",
+    title: "開発スプリントレビュー",
+    datetime: d(-7) + " 16:00",
+    organizer: KENTA,
+    attendees: [STAR, KENTA, MISAKI],
+    recurring: true,
+    hasNotes: true,
+    notes: `## 開発スプリントレビュー (${d(-7)})
+参加者: 大島、佐藤、田中
+
+### 完了したもの
+- ユーザー認証のバックエンド実装
+- ダッシュボードの初期レイアウト
+
+### 次スプリントの計画
+- 佐藤: 認証のリフレッシュトークン対応を実装する。今週中。
+- 田中: ダッシュボードのグラフ描画を実装。来週火曜まで。
+- 大島: QA環境のセットアップ手順をまとめる必要がある。`,
+  },
+  {
+    id: "ev-hearing",
+    title: "顧客ヒアリングMTG",
+    datetime: d(-3) + " 15:00",
+    organizer: STAR,
+    attendees: [STAR, KENTA, MISAKI],
+    recurring: false,
+    hasNotes: true,
+    notes: `(取り込み済み) 顧客ヒアリングMTG ${d(-3)} の議事メモ`,
+  },
+  {
+    id: "ev-1on1",
+    title: "大島 × 佐藤 1on1",
+    datetime: d(-2) + " 11:00",
+    organizer: STAR,
+    attendees: [STAR, KENTA],
+    recurring: true,
+    hasNotes: true,
+    notes: `## 1on1 (${d(-2)}) 大島 × 佐藤
+- 佐藤さんの負荷が高め。結合テストのタスクを鈴木さんへ再配分することを検討。
+- API設計ドキュメントのレビュー担当を決める必要がある。
+- 次期フェーズの技術選定について来週改めて議論する。`,
+  },
+  {
+    id: "ev-exec",
+    title: "経営会議",
+    datetime: d(-5) + " 14:00",
+    organizer: "ceo@example.com",
+    attendees: ["ceo@example.com", KENTA], // 大島は招待されていない → 選択候補に出ない
+    recurring: true,
+    hasNotes: true,
+    notes: "経営会議の議事メモ (機密)",
+  },
+];
+
+// p1 の会議読み込み設定。週次定例は名称パターンで自動取り込み。
+const meetingSources: MeetingSource[] = [
+  {
+    id: "ms1",
+    projectId: "p1",
+    type: "recurring",
+    label: "週次定例MTG",
+    namePattern: "週次定例MTG",
+    autoImport: true,
+    createdAt: d(-30),
+    lastSyncedAt: d(-1) + "T10:30:00.000Z",
+  },
+  {
+    id: "ms2",
+    projectId: "p1",
+    type: "event",
+    label: "顧客ヒアリングMTG",
+    eventTitle: "顧客ヒアリングMTG",
+    autoImport: false,
+    createdAt: d(-4),
+    lastSyncedAt: d(-3) + "T15:30:00.000Z",
+  },
+];
+
 export const seedData: AppData = {
   projects,
   tasks,
   inbox,
+  calendarEvents,
+  meetingSources,
   currentProjectId: "p1",
   currentUserEmail: "star.glc.oshima@gmail.com",
 };

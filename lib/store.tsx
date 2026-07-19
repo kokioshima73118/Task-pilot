@@ -1,10 +1,10 @@
 "use client";
 
 import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
-import { AppData, InboxItem, Member, Project, Task } from "./types";
+import { AppData, CalendarEvent, InboxItem, MeetingSource, Member, Project, Task } from "./types";
 import { seedData } from "./seed";
 
-const STORAGE_KEY = "taskpilot-data-v1";
+const STORAGE_KEY = "taskpilot-data-v2";
 
 interface StoreCtx {
   data: AppData;
@@ -12,6 +12,8 @@ interface StoreCtx {
   project: Project; // 現在のプロジェクト
   projectTasks: Task[];
   projectInbox: InboxItem[];
+  projectMeetingSources: MeetingSource[];
+  invitedEvents: CalendarEvent[]; // ログインユーザーが招待されている会議
   currentUser: Member | null;
   setCurrentProject: (id: string) => void;
   addTask: (t: Partial<Task> & { title: string }) => Task;
@@ -22,6 +24,10 @@ interface StoreCtx {
   inviteMember: (email: string, name: string) => void;
   updateMember: (memberId: string, patch: Partial<Member>) => void;
   removeMember: (memberId: string) => void;
+  addMeetingSource: (src: Omit<MeetingSource, "id" | "projectId" | "createdAt" | "lastSyncedAt">) => void;
+  updateMeetingSource: (id: string, patch: Partial<MeetingSource>) => void;
+  removeMeetingSource: (id: string) => void;
+  syncMeetings: () => number; // 取り込んだ件数を返す
   resetData: () => void;
 }
 
@@ -40,7 +46,16 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) setData(JSON.parse(raw));
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        // 旧バージョンのデータには会議関連フィールドが無いため seed で補完する
+        setData({
+          ...seedData,
+          ...parsed,
+          calendarEvents: parsed.calendarEvents ?? seedData.calendarEvents,
+          meetingSources: parsed.meetingSources ?? seedData.meetingSources,
+        });
+      }
     } catch {
       /* 破損時は seed のまま */
     }
@@ -55,6 +70,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     data.projects.find((p) => p.id === data.currentProjectId) ?? data.projects[0];
   const projectTasks = data.tasks.filter((t) => t.projectId === project.id);
   const projectInbox = data.inbox.filter((i) => i.projectId === project.id);
+  const projectMeetingSources = data.meetingSources.filter(
+    (s) => s.projectId === project.id
+  );
+  const invitedEvents = [...data.calendarEvents]
+    .filter((e) => e.attendees.includes(data.currentUserEmail))
+    .sort((a, b) => b.datetime.localeCompare(a.datetime));
   const currentUser =
     project.members.find((m) => m.email === data.currentUserEmail) ?? null;
 
@@ -182,6 +203,82 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     }));
   }, []);
 
+  const addMeetingSource = useCallback(
+    (src: Omit<MeetingSource, "id" | "projectId" | "createdAt" | "lastSyncedAt">) => {
+      setData((d) => ({
+        ...d,
+        meetingSources: [
+          ...d.meetingSources,
+          {
+            ...src,
+            id: uid("ms"),
+            projectId: d.currentProjectId,
+            createdAt: new Date().toISOString(),
+            lastSyncedAt: null,
+          },
+        ],
+      }));
+    },
+    []
+  );
+
+  const updateMeetingSource = useCallback((id: string, patch: Partial<MeetingSource>) => {
+    setData((d) => ({
+      ...d,
+      meetingSources: d.meetingSources.map((s) => (s.id === id ? { ...s, ...patch } : s)),
+    }));
+  }, []);
+
+  const removeMeetingSource = useCallback((id: string) => {
+    setData((d) => ({
+      ...d,
+      meetingSources: d.meetingSources.filter((s) => s.id !== id),
+    }));
+  }, []);
+
+  const matchesSource = (ev: CalendarEvent, s: MeetingSource) =>
+    s.type === "event"
+      ? ev.title === s.eventTitle
+      : !!s.namePattern && ev.title.includes(s.namePattern);
+
+  // 設定した会議ソースに一致する未取り込みの議事メモをインボックスへ取り込む
+  const syncMeetings = useCallback((): number => {
+    const sources = data.meetingSources.filter((s) => s.projectId === data.currentProjectId);
+    const alreadyImported = new Set(
+      data.inbox
+        .filter((i) => i.projectId === data.currentProjectId && i.sourceEventId)
+        .map((i) => i.sourceEventId)
+    );
+    const newItems: InboxItem[] = [];
+    for (const ev of data.calendarEvents) {
+      if (!ev.hasNotes || alreadyImported.has(ev.id)) continue;
+      if (!sources.some((s) => matchesSource(ev, s))) continue;
+      newItems.push({
+        id: uid("i"),
+        projectId: data.currentProjectId,
+        source: "calendar",
+        title: ev.title + " 議事メモ",
+        author: "Google カレンダー (Gemini メモ)",
+        datetime: ev.datetime,
+        content: ev.notes,
+        status: "new",
+        aiSummary: null,
+        proposals: [],
+        sourceEventId: ev.id,
+      });
+      alreadyImported.add(ev.id);
+    }
+    const nowIso = new Date().toISOString();
+    setData((d) => ({
+      ...d,
+      inbox: [...d.inbox, ...newItems],
+      meetingSources: d.meetingSources.map((s) =>
+        s.projectId === d.currentProjectId ? { ...s, lastSyncedAt: nowIso } : s
+      ),
+    }));
+    return newItems.length;
+  }, [data]);
+
   const resetData = useCallback(() => {
     localStorage.removeItem(STORAGE_KEY);
     setData(seedData);
@@ -195,6 +292,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         project,
         projectTasks,
         projectInbox,
+        projectMeetingSources,
+        invitedEvents,
         currentUser,
         setCurrentProject,
         addTask,
@@ -205,6 +304,10 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         inviteMember,
         updateMember,
         removeMember,
+        addMeetingSource,
+        updateMeetingSource,
+        removeMeetingSource,
+        syncMeetings,
         resetData,
       }}
     >
