@@ -33,3 +33,23 @@ npm run dev
   実接続する場合は Google OAuth (Calendar API `conferenceRecords` / Chat API `spaces.messages`) で
   取得したデータを `InboxItem` 形式に変換して投入する設計。
 - AI 解析はサーバー側 API Route (`app/api/ai/route.ts`) 経由。キーはクライアントに露出しない。
+
+## Cloud Run へのデプロイ
+
+GCP プロジェクト `taskpilot-app-72533` (リージョン: `asia-northeast1`) にデプロイ済み。
+
+```bash
+gcloud run deploy taskpilot \
+  --source . \
+  --project=taskpilot-app-72533 \
+  --region=asia-northeast1 \
+  --allow-unauthenticated \
+  --port=8080
+```
+
+- `Dockerfile` はマルチステージビルドで `next.config.mjs` の `output: "standalone"` を利用し、
+  実行イメージを最小化している。
+- Gemini API を使う場合はデプロイ後に環境変数を設定する:
+  `gcloud run services update taskpilot --region=asia-northeast1 --set-env-vars GEMINI_API_KEY=xxxx`
+- サービス URL: https://taskpilot-730159730676.asia-northeast1.run.app
+  (認証なしで公開 — LocalStorage 保存のためユーザーごとにデータは分離される)
