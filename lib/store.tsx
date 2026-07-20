@@ -1,299 +1,335 @@
 "use client";
 
-import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
-import { AppData, CalendarEvent, InboxItem, MeetingSource, Member, Project, Task } from "./types";
-import { seedData } from "./seed";
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { useSession } from "next-auth/react";
+import {
+  CalendarEvent,
+  InboxItem,
+  MeetingSource,
+  Member,
+  Project,
+  ProjectDoc,
+  ServiceAccount,
+  SocialAccount,
+  SocialPost,
+  Task,
+} from "./types";
 
-const STORAGE_KEY = "taskpilot-data-v2";
+const LAST_PROJECT_KEY = "taskpilot-last-project";
 
 interface StoreCtx {
-  data: AppData;
   ready: boolean;
-  project: Project; // 現在のプロジェクト
+  projects: Project[]; // ログインユーザーが所属する全プロジェクト (軽量一覧)
+  project: ProjectDoc; // 現在選択中プロジェクトのフルバンドル
   projectTasks: Task[];
   projectInbox: InboxItem[];
   projectMeetingSources: MeetingSource[];
-  invitedEvents: CalendarEvent[]; // ログインユーザーが招待されている会議
+  invitedEvents: CalendarEvent[]; // ログインユーザーが招待されている会議 (ライブ取得・非永続)
+  projectAccounts: ServiceAccount[];
+  projectSocialAccounts: SocialAccount[];
+  projectSocialPosts: SocialPost[];
   currentUser: Member | null;
   setCurrentProject: (id: string) => void;
-  addTask: (t: Partial<Task> & { title: string }) => Task;
-  updateTask: (id: string, patch: Partial<Task>) => void;
-  deleteTask: (id: string) => void;
-  updateInbox: (id: string, patch: Partial<InboxItem>) => void;
+  addTask: (t: Partial<Task> & { title: string }) => Promise<void>;
+  updateTask: (id: string, patch: Partial<Task>) => Promise<void>;
+  deleteTask: (id: string) => Promise<void>;
+  updateInbox: (id: string, patch: Partial<InboxItem>) => Promise<void>;
   addProject: (name: string, description: string) => void;
-  inviteMember: (email: string, name: string) => void;
-  updateMember: (memberId: string, patch: Partial<Member>) => void;
-  removeMember: (memberId: string) => void;
-  addMeetingSource: (src: Omit<MeetingSource, "id" | "projectId" | "createdAt" | "lastSyncedAt">) => void;
-  updateMeetingSource: (id: string, patch: Partial<MeetingSource>) => void;
-  removeMeetingSource: (id: string) => void;
-  syncMeetings: () => number; // 取り込んだ件数を返す
-  resetData: () => void;
+  inviteMember: (email: string, name: string) => Promise<void>;
+  updateMember: (memberId: string, patch: Partial<Member>) => Promise<void>;
+  removeMember: (memberId: string) => Promise<void>;
+  addMeetingSource: (
+    src: Omit<MeetingSource, "id" | "projectId" | "createdAt" | "lastSyncedAt">
+  ) => Promise<void>;
+  updateMeetingSource: (id: string, patch: Partial<MeetingSource>) => Promise<void>;
+  removeMeetingSource: (id: string) => Promise<void>;
+  syncMeetings: () => Promise<number>; // 取り込んだ件数を返す
+  addAccount: (a: Omit<ServiceAccount, "id" | "projectId" | "createdAt">) => Promise<void>;
+  updateAccount: (id: string, patch: Partial<ServiceAccount>) => Promise<void>;
+  deleteAccount: (id: string) => Promise<void>;
+  addSocialAccount: (a: Omit<SocialAccount, "id" | "projectId">) => Promise<void>;
+  updateSocialAccount: (id: string, patch: Partial<SocialAccount>) => Promise<void>;
+  deleteSocialAccount: (id: string) => Promise<void>;
+  addSocialPost: (p: Omit<SocialPost, "id" | "projectId">) => Promise<void>;
+  updateSocialPost: (id: string, patch: Partial<SocialPost>) => Promise<void>;
+  deleteSocialPost: (id: string) => Promise<void>;
 }
+
+const EMPTY_PROJECT: ProjectDoc = {
+  id: "",
+  name: "",
+  description: "",
+  color: "#6366f1",
+  members: [],
+  memberEmails: [],
+  ownerEmail: "",
+  createdAt: "",
+  tasks: [],
+  inbox: [],
+  meetingSources: [],
+  accounts: [],
+  socialAccounts: [],
+  socialPosts: [],
+};
 
 const Ctx = createContext<StoreCtx | null>(null);
 
-function uid(prefix: string) {
-  return prefix + Math.random().toString(36).slice(2, 9);
+async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, {
+    ...init,
+    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error ?? `API error ${res.status}`);
+  return body as T;
 }
 
-const AVATAR_COLORS = ["#6366f1", "#10b981", "#f59e0b", "#ec4899", "#06b6d4", "#8b5cf6", "#ef4444"];
-
 export function StoreProvider({ children }: { children: React.ReactNode }) {
-  const [data, setData] = useState<AppData>(seedData);
+  const { data: session, status } = useSession();
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [project, setProject] = useState<ProjectDoc>(EMPTY_PROJECT);
   const [ready, setReady] = useState(false);
+  const [invitedEvents, setInvitedEvents] = useState<CalendarEvent[]>([]);
+  const loadingProjectRef = useRef<string | null>(null);
 
-  useEffect(() => {
+  const loadProject = useCallback(async (id: string) => {
+    if (loadingProjectRef.current === id) return;
+    loadingProjectRef.current = id;
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        // 旧バージョンのデータには会議関連フィールドが無いため seed で補完する
-        setData({
-          ...seedData,
-          ...parsed,
-          calendarEvents: parsed.calendarEvents ?? seedData.calendarEvents,
-          meetingSources: parsed.meetingSources ?? seedData.meetingSources,
-        });
-      }
-    } catch {
-      /* 破損時は seed のまま */
+      const doc = await apiFetch<ProjectDoc>(`/api/projects/${id}`);
+      setProject(doc);
+      localStorage.setItem(LAST_PROJECT_KEY, id);
+    } catch (e) {
+      console.error("プロジェクトの読み込みに失敗しました", e);
+    } finally {
+      loadingProjectRef.current = null;
     }
-    setReady(true);
   }, []);
 
+  // 初回ロード: 所属プロジェクト一覧を取得し、最後に見ていたプロジェクト (無ければ先頭) を開く
   useEffect(() => {
-    if (ready) localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  }, [data, ready]);
+    if (status !== "authenticated") return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await apiFetch<Project[]>("/api/projects");
+        if (cancelled) return;
+        setProjects(list);
+        if (list.length > 0) {
+          const lastId = localStorage.getItem(LAST_PROJECT_KEY);
+          const initialId = list.some((p) => p.id === lastId) ? (lastId as string) : list[0].id;
+          await loadProject(initialId);
+        }
+      } catch (e) {
+        console.error("プロジェクト一覧の取得に失敗しました", e);
+      } finally {
+        if (!cancelled) setReady(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [status, loadProject]);
 
-  const project =
-    data.projects.find((p) => p.id === data.currentProjectId) ?? data.projects[0];
-  const projectTasks = data.tasks.filter((t) => t.projectId === project.id);
-  const projectInbox = data.inbox.filter((i) => i.projectId === project.id);
-  const projectMeetingSources = data.meetingSources.filter(
-    (s) => s.projectId === project.id
+  // ログインユーザーが招待されている Google カレンダーの予定 (ライブ取得)
+  useEffect(() => {
+    if (status !== "authenticated") return;
+    let cancelled = false;
+    apiFetch<CalendarEvent[]>("/api/calendar/events")
+      .then((events) => {
+        if (!cancelled) setInvitedEvents(events);
+      })
+      .catch((e) => console.error("カレンダー予定の取得に失敗しました", e));
+    return () => {
+      cancelled = true;
+    };
+  }, [status]);
+
+  const setCurrentProject = useCallback(
+    (id: string) => {
+      void loadProject(id);
+    },
+    [loadProject]
   );
-  const invitedEvents = [...data.calendarEvents]
-    .filter((e) => e.attendees.includes(data.currentUserEmail))
-    .sort((a, b) => b.datetime.localeCompare(a.datetime));
-  const currentUser =
-    project.members.find((m) => m.email === data.currentUserEmail) ?? null;
 
-  const setCurrentProject = useCallback((id: string) => {
-    setData((d) => ({ ...d, currentProjectId: id }));
-  }, []);
+  const currentUser = project.members.find((m) => m.email === session?.user?.email) ?? null;
 
-  const addTask = useCallback(
-    (t: Partial<Task> & { title: string }): Task => {
-      const now = new Date().toISOString();
-      const task: Task = {
-        id: uid("t"),
-        projectId: t.projectId ?? project.id,
-        title: t.title,
-        description: t.description ?? "",
-        status: t.status ?? "todo",
-        priority: t.priority ?? "medium",
-        assigneeId: t.assigneeId ?? null,
-        parentId: t.parentId ?? null,
-        startDate: t.startDate ?? null,
-        dueDate: t.dueDate ?? null,
-        progress: t.progress ?? 0,
-        tags: t.tags ?? [],
-        source: t.source ?? "manual",
-        sourceLabel: t.sourceLabel,
-        createdAt: now,
-        updatedAt: now,
-      };
-      setData((d) => ({ ...d, tasks: [...d.tasks, task] }));
-      return task;
+  /** 現在のプロジェクトに対する CRUD 系 API を呼び、返ってきた最新ドキュメントで state を更新する。 */
+  const mutate = useCallback(
+    async (path: string, init: RequestInit) => {
+      try {
+        const updated = await apiFetch<ProjectDoc>(`/api/projects/${project.id}${path}`, init);
+        setProject(updated);
+      } catch (e) {
+        console.error(`API呼び出しに失敗しました: ${path}`, e);
+      }
     },
     [project.id]
   );
 
-  const updateTask = useCallback((id: string, patch: Partial<Task>) => {
-    setData((d) => ({
-      ...d,
-      tasks: d.tasks.map((t) =>
-        t.id === id ? { ...t, ...patch, updatedAt: new Date().toISOString() } : t
-      ),
-    }));
-  }, []);
-
-  const deleteTask = useCallback((id: string) => {
-    setData((d) => ({
-      ...d,
-      tasks: d.tasks.filter((t) => t.id !== id && t.parentId !== id),
-    }));
-  }, []);
-
-  const updateInbox = useCallback((id: string, patch: Partial<InboxItem>) => {
-    setData((d) => ({
-      ...d,
-      inbox: d.inbox.map((i) => (i.id === id ? { ...i, ...patch } : i)),
-    }));
-  }, []);
+  const addTask = useCallback(
+    (t: Partial<Task> & { title: string }) => {
+      return mutate("/tasks", { method: "POST", body: JSON.stringify(t) });
+    },
+    [mutate]
+  );
+  const updateTask = useCallback(
+    (id: string, patch: Partial<Task>) => {
+      return mutate(`/tasks/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+    },
+    [mutate]
+  );
+  const deleteTask = useCallback(
+    (id: string) => {
+      return mutate(`/tasks/${id}`, { method: "DELETE" });
+    },
+    [mutate]
+  );
+  const updateInbox = useCallback(
+    (id: string, patch: Partial<InboxItem>) => {
+      return mutate(`/inbox/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+    },
+    [mutate]
+  );
 
   const addProject = useCallback((name: string, description: string) => {
-    setData((d) => {
-      const me = project.members.find((m) => m.email === d.currentUserEmail);
-      const p: Project = {
-        id: uid("p"),
-        name,
-        description,
-        color: AVATAR_COLORS[d.projects.length % AVATAR_COLORS.length],
-        members: me ? [{ ...me, role: "owner" }] : [],
-        createdAt: new Date().toISOString().slice(0, 10),
-      };
-      return { ...d, projects: [...d.projects, p], currentProjectId: p.id };
-    });
-  }, [project.members]);
+    (async () => {
+      try {
+        const created = await apiFetch<ProjectDoc>("/api/projects", {
+          method: "POST",
+          body: JSON.stringify({ name, description }),
+        });
+        setProjects((ps) => [...ps, created]);
+        setProject(created);
+        localStorage.setItem(LAST_PROJECT_KEY, created.id);
+      } catch (e) {
+        console.error("プロジェクトの作成に失敗しました", e);
+      }
+    })();
+  }, []);
 
   const inviteMember = useCallback(
     (email: string, name: string) => {
-      setData((d) => ({
-        ...d,
-        projects: d.projects.map((p) =>
-          p.id === d.currentProjectId
-            ? {
-                ...p,
-                members: [
-                  ...p.members,
-                  {
-                    id: uid("m"),
-                    name: name || email.split("@")[0],
-                    email,
-                    avatarColor:
-                      AVATAR_COLORS[p.members.length % AVATAR_COLORS.length],
-                    role: "member",
-                    status: "invited",
-                  },
-                ],
-              }
-            : p
-        ),
-      }));
+      return mutate("/members", { method: "POST", body: JSON.stringify({ email, name }) });
     },
-    []
+    [mutate]
   );
-
-  const updateMember = useCallback((memberId: string, patch: Partial<Member>) => {
-    setData((d) => ({
-      ...d,
-      projects: d.projects.map((p) =>
-        p.id === d.currentProjectId
-          ? {
-              ...p,
-              members: p.members.map((m) =>
-                m.id === memberId ? { ...m, ...patch } : m
-              ),
-            }
-          : p
-      ),
-    }));
-  }, []);
-
-  const removeMember = useCallback((memberId: string) => {
-    setData((d) => ({
-      ...d,
-      projects: d.projects.map((p) =>
-        p.id === d.currentProjectId
-          ? { ...p, members: p.members.filter((m) => m.id !== memberId) }
-          : p
-      ),
-    }));
-  }, []);
+  const updateMember = useCallback(
+    (memberId: string, patch: Partial<Member>) => {
+      return mutate(`/members/${memberId}`, { method: "PATCH", body: JSON.stringify(patch) });
+    },
+    [mutate]
+  );
+  const removeMember = useCallback(
+    (memberId: string) => {
+      return mutate(`/members/${memberId}`, { method: "DELETE" });
+    },
+    [mutate]
+  );
 
   const addMeetingSource = useCallback(
     (src: Omit<MeetingSource, "id" | "projectId" | "createdAt" | "lastSyncedAt">) => {
-      setData((d) => ({
-        ...d,
-        meetingSources: [
-          ...d.meetingSources,
-          {
-            ...src,
-            id: uid("ms"),
-            projectId: d.currentProjectId,
-            createdAt: new Date().toISOString(),
-            lastSyncedAt: null,
-          },
-        ],
-      }));
+      return mutate("/meeting-sources", { method: "POST", body: JSON.stringify(src) });
     },
-    []
+    [mutate]
+  );
+  const updateMeetingSource = useCallback(
+    (id: string, patch: Partial<MeetingSource>) => {
+      return mutate(`/meeting-sources/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+    },
+    [mutate]
+  );
+  const removeMeetingSource = useCallback(
+    (id: string) => {
+      return mutate(`/meeting-sources/${id}`, { method: "DELETE" });
+    },
+    [mutate]
   );
 
-  const updateMeetingSource = useCallback((id: string, patch: Partial<MeetingSource>) => {
-    setData((d) => ({
-      ...d,
-      meetingSources: d.meetingSources.map((s) => (s.id === id ? { ...s, ...patch } : s)),
-    }));
-  }, []);
-
-  const removeMeetingSource = useCallback((id: string) => {
-    setData((d) => ({
-      ...d,
-      meetingSources: d.meetingSources.filter((s) => s.id !== id),
-    }));
-  }, []);
-
-  const matchesSource = (ev: CalendarEvent, s: MeetingSource) =>
-    s.type === "event"
-      ? ev.title === s.eventTitle
-      : !!s.namePattern && ev.title.includes(s.namePattern);
-
-  // 設定した会議ソースに一致する未取り込みの議事メモをインボックスへ取り込む
-  const syncMeetings = useCallback((): number => {
-    const sources = data.meetingSources.filter((s) => s.projectId === data.currentProjectId);
-    const alreadyImported = new Set(
-      data.inbox
-        .filter((i) => i.projectId === data.currentProjectId && i.sourceEventId)
-        .map((i) => i.sourceEventId)
-    );
-    const newItems: InboxItem[] = [];
-    for (const ev of data.calendarEvents) {
-      if (!ev.hasNotes || alreadyImported.has(ev.id)) continue;
-      if (!sources.some((s) => matchesSource(ev, s))) continue;
-      newItems.push({
-        id: uid("i"),
-        projectId: data.currentProjectId,
-        source: "calendar",
-        title: ev.title + " 議事メモ",
-        author: "Google カレンダー (Gemini メモ)",
-        datetime: ev.datetime,
-        content: ev.notes,
-        status: "new",
-        aiSummary: null,
-        proposals: [],
-        sourceEventId: ev.id,
-      });
-      alreadyImported.add(ev.id);
+  const syncMeetings = useCallback(async (): Promise<number> => {
+    try {
+      const result = await apiFetch<{ imported: number; project: ProjectDoc }>(
+        `/api/projects/${project.id}/sync-meetings`,
+        { method: "POST" }
+      );
+      setProject(result.project);
+      return result.imported;
+    } catch (e) {
+      console.error("会議の同期に失敗しました", e);
+      return 0;
     }
-    const nowIso = new Date().toISOString();
-    setData((d) => ({
-      ...d,
-      inbox: [...d.inbox, ...newItems],
-      meetingSources: d.meetingSources.map((s) =>
-        s.projectId === d.currentProjectId ? { ...s, lastSyncedAt: nowIso } : s
-      ),
-    }));
-    return newItems.length;
-  }, [data]);
+  }, [project.id]);
 
-  const resetData = useCallback(() => {
-    localStorage.removeItem(STORAGE_KEY);
-    setData(seedData);
-  }, []);
+  const addAccount = useCallback(
+    (a: Omit<ServiceAccount, "id" | "projectId" | "createdAt">) => {
+      return mutate("/accounts", { method: "POST", body: JSON.stringify(a) });
+    },
+    [mutate]
+  );
+  const updateAccount = useCallback(
+    (id: string, patch: Partial<ServiceAccount>) => {
+      return mutate(`/accounts/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+    },
+    [mutate]
+  );
+  const deleteAccount = useCallback(
+    (id: string) => {
+      return mutate(`/accounts/${id}`, { method: "DELETE" });
+    },
+    [mutate]
+  );
+
+  const addSocialAccount = useCallback(
+    (a: Omit<SocialAccount, "id" | "projectId">) => {
+      return mutate("/social-accounts", { method: "POST", body: JSON.stringify(a) });
+    },
+    [mutate]
+  );
+  const updateSocialAccount = useCallback(
+    (id: string, patch: Partial<SocialAccount>) => {
+      return mutate(`/social-accounts/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+    },
+    [mutate]
+  );
+  const deleteSocialAccount = useCallback(
+    (id: string) => {
+      return mutate(`/social-accounts/${id}`, { method: "DELETE" });
+    },
+    [mutate]
+  );
+
+  const addSocialPost = useCallback(
+    (p: Omit<SocialPost, "id" | "projectId">) => {
+      return mutate("/social-posts", { method: "POST", body: JSON.stringify(p) });
+    },
+    [mutate]
+  );
+  const updateSocialPost = useCallback(
+    (id: string, patch: Partial<SocialPost>) => {
+      return mutate(`/social-posts/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+    },
+    [mutate]
+  );
+  const deleteSocialPost = useCallback(
+    (id: string) => {
+      return mutate(`/social-posts/${id}`, { method: "DELETE" });
+    },
+    [mutate]
+  );
 
   return (
     <Ctx.Provider
       value={{
-        data,
         ready,
+        projects,
         project,
-        projectTasks,
-        projectInbox,
-        projectMeetingSources,
+        projectTasks: project.tasks,
+        projectInbox: project.inbox,
+        projectMeetingSources: project.meetingSources,
         invitedEvents,
+        projectAccounts: project.accounts,
+        projectSocialAccounts: project.socialAccounts,
+        projectSocialPosts: project.socialPosts,
         currentUser,
         setCurrentProject,
         addTask,
@@ -308,7 +344,15 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         updateMeetingSource,
         removeMeetingSource,
         syncMeetings,
-        resetData,
+        addAccount,
+        updateAccount,
+        deleteAccount,
+        addSocialAccount,
+        updateSocialAccount,
+        deleteSocialAccount,
+        addSocialPost,
+        updateSocialPost,
+        deleteSocialPost,
       }}
     >
       {children}

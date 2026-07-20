@@ -36,8 +36,8 @@ export default function MeetingsPage() {
       s.type === "event" ? s.eventTitle === ev.title : !!s.namePattern && ev.title.includes(s.namePattern)
     );
 
-  const runSync = () => {
-    const n = syncMeetings();
+  const runSync = async () => {
+    const n = await syncMeetings();
     setSyncMsg(n > 0 ? `${n} 件の議事メモをインボックスに取り込みました` : "新しく取り込める議事メモはありませんでした");
     setTimeout(() => setSyncMsg(null), 5000);
   };

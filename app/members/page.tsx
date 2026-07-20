@@ -12,7 +12,7 @@ const ROLE_LABEL: Record<MemberRole, string> = {
 };
 
 export default function MembersPage() {
-  const { ready, project, projectTasks, currentUser, inviteMember, updateMember, removeMember, resetData } = useStore();
+  const { ready, project, projectTasks, currentUser, inviteMember, updateMember, removeMember } = useStore();
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [invited, setInvited] = useState<string | null>(null);
@@ -30,7 +30,7 @@ export default function MembersPage() {
       return;
     }
     inviteMember(em, name.trim());
-    setInvited(`${em} に招待を送信しました (Googleアカウントで参加できます)`);
+    setInvited(`${em} を招待しました。そのGoogleアカウントでログインすると自動的に参加します。`);
     setEmail("");
     setName("");
   };
@@ -70,7 +70,8 @@ export default function MembersPage() {
           </div>
           {invited && <p className="text-xs text-emerald-600 mt-2">{invited}</p>}
           <p className="text-[11px] text-slate-400 mt-2">
-            ※ デモ版のため招待メールは送信されません。本番では Google OAuth 経由で参加承認されます。
+            ※ 招待メールは送信されません。招待したGoogleアカウントが TaskPilot に初めてログインした時点で、
+            このプロジェクトへの参加ステータスが自動的に「招待中」→「参加済み」に切り替わります。
           </p>
         </form>
       )}
@@ -86,7 +87,7 @@ export default function MembersPage() {
                   <span className="text-[10px] bg-slate-200 text-slate-600 rounded px-1.5 py-0.5">あなた</span>
                 )}
                 {m.status === "invited" && (
-                  <span className="text-[10px] bg-amber-100 text-amber-700 rounded px-1.5 py-0.5">招待中</span>
+                  <span className="text-[10px] bg-amber-100 text-amber-700 rounded px-1.5 py-0.5">招待中 (未ログイン)</span>
                 )}
               </div>
               <div className="text-xs text-slate-400 truncate">{m.email}</div>
@@ -104,15 +105,6 @@ export default function MembersPage() {
                   <option value="admin">管理者</option>
                   <option value="member">メンバー</option>
                 </select>
-                {m.status === "invited" && (
-                  <button
-                    className="text-xs text-indigo-600 hover:underline"
-                    onClick={() => updateMember(m.id, { status: "active" })}
-                    title="デモ用: 招待承認をシミュレート"
-                  >
-                    承認を模擬
-                  </button>
-                )}
                 <button
                   className="text-xs text-red-500 hover:underline"
                   onClick={() => removeMember(m.id)}
@@ -125,17 +117,6 @@ export default function MembersPage() {
             )}
           </div>
         ))}
-      </div>
-
-      <div className="mt-8 border-t border-slate-200 pt-4">
-        <button
-          className="text-xs text-slate-400 hover:text-red-500"
-          onClick={() => {
-            if (confirm("デモデータを初期状態に戻します。よろしいですか?")) resetData();
-          }}
-        >
-          🔄 デモデータをリセット
-        </button>
       </div>
     </div>
   );

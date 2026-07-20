@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
+import { signOut, useSession } from "next-auth/react";
 import { useStore } from "@/lib/store";
 import { Avatar } from "./ui";
 
@@ -13,12 +14,15 @@ const NAV = [
   { href: "/inbox", label: "連携インボックス", icon: "📥" },
   { href: "/meetings", label: "会議連携の設定", icon: "📆" },
   { href: "/summary", label: "期間サマリ", icon: "📈" },
+  { href: "/accounts", label: "アカウント管理", icon: "🔑" },
+  { href: "/social", label: "SNS管理", icon: "📣" },
   { href: "/members", label: "メンバー", icon: "👥" },
 ];
 
 export default function Sidebar() {
   const pathname = usePathname();
-  const { data, ready, project, projectInbox, currentUser, setCurrentProject, addProject } = useStore();
+  const { data: session } = useSession();
+  const { projects, ready, project, projectInbox, currentUser, setCurrentProject, addProject } = useStore();
   const [showNewProject, setShowNewProject] = useState(false);
   const [newName, setNewName] = useState("");
 
@@ -38,14 +42,14 @@ export default function Sidebar() {
 
       <div className="px-3 py-3 border-b border-slate-700/60">
         <label className="text-[11px] text-slate-400 px-1">プロジェクト</label>
-        {ready && (
+        {ready && projects.length > 0 && (
           <select
             className="mt-1 w-full bg-slate-800 border border-slate-700 rounded-md px-2 py-1.5 text-sm text-white"
             value={project.id}
             onChange={(e) => setCurrentProject(e.target.value)}
             data-testid="project-select"
           >
-            {data.projects.map((p) => (
+            {projects.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
               </option>
@@ -110,10 +114,17 @@ export default function Sidebar() {
 
       <div className="px-4 py-3 border-t border-slate-700/60 flex items-center gap-2.5">
         <Avatar member={currentUser} size={32} />
-        <div className="min-w-0">
-          <div className="text-sm text-white truncate">{currentUser?.name ?? "ゲスト"}</div>
-          <div className="text-[10px] text-slate-400 truncate">{data.currentUserEmail}</div>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm text-white truncate">{currentUser?.name ?? session?.user?.name ?? "ゲスト"}</div>
+          <div className="text-[10px] text-slate-400 truncate">{session?.user?.email}</div>
         </div>
+        <button
+          className="text-[11px] text-slate-400 hover:text-white shrink-0"
+          onClick={() => signOut({ callbackUrl: "/signin" })}
+          title="ログアウト"
+        >
+          ログアウト
+        </button>
       </div>
     </aside>
   );

@@ -48,11 +48,11 @@ export default function InboxPage() {
     }
   };
 
-  const acceptProposal = (item: InboxItem, proposal: Proposal) => {
+  const acceptProposal = async (item: InboxItem, proposal: Proposal) => {
     const assignee = proposal.assigneeName
       ? project.members.find((m) => m.name === proposal.assigneeName)
       : null;
-    addTask({
+    await addTask({
       title: proposal.title,
       description: proposal.description + (proposal.description ? "\n\n" : "") + `出典: ${item.title} (${item.datetime})`,
       priority: proposal.priority,
@@ -63,24 +63,25 @@ export default function InboxPage() {
       sourceLabel: item.title,
       tags: ["AI抽出"],
     });
-    markProposal(item, proposal.id, true);
+    await markProposal(item, proposal.id, true);
   };
 
-  const markProposal = (item: InboxItem, proposalId: string, accepted: boolean) => {
+  const markProposal = async (item: InboxItem, proposalId: string, accepted: boolean) => {
     const proposals = item.proposals.map((p) =>
       p.id === proposalId ? { ...p, accepted } : p
     );
     const allJudged = proposals.every((p) => p.accepted !== null);
-    updateInbox(item.id, { proposals, status: allJudged ? "done" : "analyzed" });
+    await updateInbox(item.id, { proposals, status: allJudged ? "done" : "analyzed" });
   };
 
-  const acceptAllPending = (item: InboxItem) => {
+  const acceptAllPending = async (item: InboxItem) => {
     const pending = item.proposals.filter((p) => p.accepted === null);
     for (const p of pending) {
       const assignee = p.assigneeName
         ? project.members.find((m) => m.name === p.assigneeName)
         : null;
-      addTask({
+      // Firestore への書き込み順を保証するため直列に await する
+      await addTask({
         title: p.title,
         description: p.description + (p.description ? "\n\n" : "") + `出典: ${item.title} (${item.datetime})`,
         priority: p.priority,
@@ -92,7 +93,7 @@ export default function InboxPage() {
         tags: ["AI抽出"],
       });
     }
-    updateInbox(item.id, {
+    await updateInbox(item.id, {
       proposals: item.proposals.map((p) =>
         p.accepted === null ? { ...p, accepted: true } : p
       ),
